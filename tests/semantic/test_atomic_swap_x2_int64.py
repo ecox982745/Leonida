@@ -4,6 +4,7 @@ import contextlib
 import os
 import pathlib
 import struct
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -88,6 +89,42 @@ class AtomicSwapX2Int64Tests(unittest.TestCase):
         spv_on = _translate_cs(body, int64_atomics=True)
         self.assertNotIn("Int64Atomics", spv_on)
         self.assertNotIn("OpAtomicExchange %ulong", spv_on)
+
+    def test_cli_flag_end_to_end(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            in_dir = os.path.join(tmp, "in")
+            os.makedirs(os.path.join(in_dir, "fssm"))
+            os.makedirs(os.path.join(in_dir, "disasm"))
+            out_dir = os.path.join(tmp, "out")
+            with open(os.path.join(in_dir, "fssm", "cs_cli.fssm"), "wb") as f:
+                f.write(FSSM)
+            with open(os.path.join(in_dir, "disasm", "cs_cli.s"), "w", encoding="utf-8") as f:
+                f.write("; cs_cli\n\t" + "\n\t".join([
+                    "s_mov_b32 s4, 0",
+                    "s_mov_b32 s5, 0",
+                    "s_mov_b32 s6, 64",
+                    "s_mov_b32 s7, 0x31016fac",
+                    "v_mov_b32 v0, 1",
+                    "v_mov_b32 v1, 2",
+                    "v_mov_b32 v2, 8",
+                    "buffer_atomic_swap_x2 v[0:1], v2, s[4:7], 0 offen glc",
+                    "s_endpgm",
+                ]) + "\n")
+            translator = pathlib.Path(__file__).resolve().parents[2] / "tools" / "rdna2spirv.py"
+            res = subprocess.run(
+                [sys.executable, "-I", str(translator), os.path.join(in_dir, "disasm"),
+                 "--out", out_dir, "--int64-atomics"],
+                capture_output=True, text=True, check=False,
+            )
+            if res.returncode != 0:
+                self.assertTrue(
+                    "FileNotFoundError" in res.stderr or "not found" in res.stderr,
+                    res.stderr,
+                )
+            spv_path = next(pathlib.Path(out_dir).rglob("*.spvasm"))
+            spv_text = spv_path.read_text(encoding="utf-8")
+            self.assertIn("OpCapability Int64Atomics", spv_text)
+            self.assertIn("= OpAtomicExchange %ulong", spv_text)
 
 
 if __name__ == "__main__":
