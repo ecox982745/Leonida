@@ -100,6 +100,7 @@ PC_TAIL_SET, PC_TAIL_BINDING = 1, 0
 # the validation layer counts it too (VUID-RuntimeSpirv-Location-06272), so (29 + 1) * 4 + 4 = 124 is the most a VS
 # can use there.
 F16_HALVES = False
+INT64_ATOMICS = False
 F16_HALF_TOP = 29
 OPT_SPIRV = False       # --opt: run tools/spirv_opt.py basic-block peephole pass on emitted SPIR-V (#884)
 
@@ -311,6 +312,8 @@ class Gen:
         self.uses_fma_khr = False      # an OpFmaKHR was emitted: capability FMAKHR + extension SPV_KHR_fma
         self.uses_fma_khr32 = False    # ... on f32 (feature shaderFmaFloat32)
         self.uses_fma_khr64 = False    # ... on f64 (feature shaderFmaFloat64)
+        self.uses_int64_atomics = False  # a 64-bit OpAtomicExchange was emitted: capability Int64Atomics
+        self.int64_atomics = INT64_ATOMICS  # --int64-atomics: use 64-bit OpAtomicExchange for *_atomic_swap_x2
         self.uses_clock = set()
         self.uses_bvh = False
         self.lconsts = {}              # 64-bit constants: value -> id
@@ -2974,6 +2977,22 @@ class Gen:
         if vdst is not None:
             self.dst(vdst, old)
 
+    def _emit_atomic_swap_x2(self, host_addr, vals):
+        """Emit a single 64-bit OpAtomicExchange on a PhysicalStorageBuffer pointer and return [lo, hi]."""
+        self.uses_int64_atomics = True
+        p64, lo64, hi64, hi_sh, val64, r64 = (self.tmp() for _ in range(6))
+        r_lo, r_hi64, r_hi = self.tmp(), self.tmp(), self.tmp()
+        self.emit(f"{p64} = OpConvertUToPtr %_ptr_PSB_ulong {host_addr}")
+        self.emit(f"{lo64} = OpUConvert %ulong {vals[0]}")
+        self.emit(f"{hi64} = OpUConvert %ulong {vals[1]}")
+        self.emit(f"{hi_sh} = OpShiftLeftLogical %ulong {hi64} %c64_32")
+        self.emit(f"{val64} = OpBitwiseOr %ulong {lo64} {hi_sh}")
+        self.emit(f"{r64} = OpAtomicExchange %ulong {p64} {self.cu(1)} {self.cu(0)} {val64}")
+        self.emit(f"{r_lo} = OpUConvert %uint {r64}")
+        self.emit(f"{r_hi64} = OpShiftRightLogical %ulong {r64} %c64_32")
+        self.emit(f"{r_hi} = OpUConvert %uint {r_hi64}")
+        return [r_lo, r_hi]
+
     def global_atomic_x2(self, op, kind, a, mods):
         """global_atomic_{and,or,xor,swap}_x2 (see global_atomic): one 32-bit atomic per dword of the element."""
         if any(m in mods for m in ("slc", "dlc", "lds")):
@@ -2996,14 +3015,17 @@ class Gen:
         self.emit(f"OpSelectionMerge {lbl_end} None")
         self.emit(f"OpBranchConditional {cond} {lbl_do} {lbl_end}")
         self.emit(f"{lbl_do} = OpLabel")
-        ptr = self.tmp()
-        self.emit(f"{ptr} = OpConvertUToPtr %_ptr_PSB_arr {self.host_addr(full)}")
-        res = []
-        for w in range(2):
-            p, r = self.tmp(), self.tmp()
-            self.emit(f"{p} = OpAccessChain %_ptr_PSB_uint {ptr} {self.cu(w)}")
-            self.emit(f"{r} = {spv} %uint {p} {self.cu(1)} {self.cu(0)} {vals[w]}")
-            res.append(r)
+        if self.int64_atomics and kind == "swap":
+            res = self._emit_atomic_swap_x2(self.host_addr(full), vals)
+        else:
+            ptr = self.tmp()
+            self.emit(f"{ptr} = OpConvertUToPtr %_ptr_PSB_arr {self.host_addr(full)}")
+            res = []
+            for w in range(2):
+                p, r = self.tmp(), self.tmp()
+                self.emit(f"{p} = OpAccessChain %_ptr_PSB_uint {ptr} {self.cu(w)}")
+                self.emit(f"{r} = {spv} %uint {p} {self.cu(1)} {self.cu(0)} {vals[w]}")
+                res.append(r)
         self.emit(f"OpBranch {lbl_end}")
         self.emit(f"{lbl_end} = OpLabel")
         olds = []
@@ -3138,14 +3160,17 @@ class Gen:
         self.emit(f"OpSelectionMerge {lbl_end} None")
         self.emit(f"OpBranchConditional {cond} {lbl_do} {lbl_end}")
         self.emit(f"{lbl_do} = OpLabel")
-        ptr = self.tmp()
-        self.emit(f"{ptr} = OpConvertUToPtr %_ptr_PSB_arr {self.host_addr(addr)}")
-        res = []
-        for w in range(2):
-            p, r = self.tmp(), self.tmp()
-            self.emit(f"{p} = OpAccessChain %_ptr_PSB_uint {ptr} {self.cu(w)}")
-            self.emit(f"{r} = {self.BUF_ATOMICS[kind][0]} %uint {p} {self.cu(1)} {self.cu(0)} {vals[w]}")
-            res.append(r)
+        if self.int64_atomics and kind == "swap":
+            res = self._emit_atomic_swap_x2(self.host_addr(addr), vals)
+        else:
+            ptr = self.tmp()
+            self.emit(f"{ptr} = OpConvertUToPtr %_ptr_PSB_arr {self.host_addr(addr)}")
+            res = []
+            for w in range(2):
+                p, r = self.tmp(), self.tmp()
+                self.emit(f"{p} = OpAccessChain %_ptr_PSB_uint {ptr} {self.cu(w)}")
+                self.emit(f"{r} = {self.BUF_ATOMICS[kind][0]} %uint {p} {self.cu(1)} {self.cu(0)} {vals[w]}")
+                res.append(r)
         self.emit(f"OpBranch {lbl_end}")
         self.emit(f"{lbl_end} = OpLabel")
         olds = []
@@ -15360,6 +15385,8 @@ def assemble(gen):
         caps.append("Float64")
     if gen.uses_fma_khr:
         caps.append("FMAKHR")
+    if gen.uses_int64_atomics:
+        caps.append("Int64Atomics")
     if gen.uses_clock:
         caps.append("ShaderClockKHR")
     if gen.uses_dynamic_sampled_index:
@@ -15518,6 +15545,8 @@ def assemble(gen):
         types += ["%ulong = OpTypeInt 64 0", "%c64_32 = OpConstant %ulong 32", "%long = OpTypeInt 64 1",
                   "%rt_uint = OpTypeRuntimeArray %uint", "%_ptr_PSB_arr = OpTypePointer PhysicalStorageBuffer %rt_uint",
                   "%_ptr_PSB_uint = OpTypePointer PhysicalStorageBuffer %uint"]
+        if gen.uses_int64_atomics:
+            types.append("%_ptr_PSB_ulong = OpTypePointer PhysicalStorageBuffer %ulong")
         dec.append("OpDecorate %rt_uint ArrayStride 4")
         types += [f"{name} = OpConstant %ulong {v}" for v, name in sorted(gen.lconsts.items())]
     if tex:
@@ -18364,6 +18393,7 @@ def shader_meta(g, asm, src_path=None, fssm_path=None):
              "ClipDistance": "shaderClipDistance", "CullDistance": "shaderCullDistance",
              "ShaderLayer": "shaderOutputLayer", "ShaderViewportIndex": "shaderOutputViewportIndex",
              "DrawParameters": "shaderDrawParameters",
+             "Int64Atomics": "shaderBufferInt64Atomics",
              }     # FMAKHR: shaderFmaFloat32 / shaderFmaFloat64 (VK_KHR_shader_fma) by the width used, below
     m = {"stage": g.stage, "wave64": bool(g.wave64), "control_flow": getattr(g, "control_flow", "straight line"),
          # How fused multiply-adds were emitted. --fma khr is already implied by the FMAKHR capability,
@@ -18800,6 +18830,9 @@ def main():
                     help="16-bit interpolation without PerVertexKHR inputs, for devices that can't compile them "
                          "(MoltenVK): VS and mesh params also export their f16 halves decoded to f32, which the PS "
                          "reads as ordinary interpolated inputs (metadata: f16_halves)")
+    ap.add_argument("--int64-atomics", action="store_true",
+                    help="use 64-bit OpAtomicExchange for global_atomic_swap_x2 / buffer_atomic_swap_x2 "
+                         "(needs shaderBufferInt64Atomics, capability Int64Atomics; prevents 32-bit tearing)")
     ap.add_argument("--max-shared-memory", type=int, default=MAX_SHARED_BYTES, metavar="BYTES",
                     help="cap on a compute shader's workgroup memory, its LDS plus what --wave64-emulate adds "
                          "(default %(default)s, the 64 KiB hard cap): over it the LDS array shrinks to the program's "
@@ -18850,6 +18883,7 @@ def main():
     TEXEL_OFFSET_FALLBACK = a.texel_offset_fallback
     MESH_COMPUTE = a.mesh_compute
     F16_HALVES = a.f16_interp_fallback
+    INT64_ATOMICS = a.int64_atomics
     OPT_SPIRV = a.opt
     if a.merge:
         try:
