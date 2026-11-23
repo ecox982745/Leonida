@@ -87,7 +87,7 @@ SAVEEXEC = ("s_and_saveexec_b", "s_or_saveexec_b", "s_xor_saveexec_b", "s_andn2_
             "s_nand_saveexec_b", "s_nor_saveexec_b", "s_xnor_saveexec_b", "s_andn1_saveexec_b", "s_orn1_saveexec_b",
             "s_and_wrexec_b", "s_andn2_wrexec_b", "s_andn1_wrexec_b")
 RMW_DEST = (
-    "v_fmac_f32", "v_fmac_f16", "v_mac_f32", "v_mac_legacy_f32", "v_pk_fmac_f16",
+    "v_fmac_f32", "v_fmac_legacy_f32", "v_fmac_f16", "v_mac_f32", "v_mac_legacy_f32", "v_pk_fmac_f16",
     "v_dot2c_f32_f16", "v_dot2c_f32_bf16", "v_dot2c_i32_i16", "v_dot4c_i32_i8", "v_dot8c_i32_i4",
     "s_addk_i32", "s_mulk_i32", "s_cmovk_i32", "s_cmov_b32", "s_cmov_b64",
     "s_bitset0_b32", "s_bitset0_b64", "s_bitset1_b32", "s_bitset1_b64",
@@ -128,6 +128,72 @@ def partial_write(ins, op):
     if not (first and _TYPE16.match(first)):
         return False
     return not (name in VOP2_INT16 and "_e64" not in op)
+
+
+# Integer 16-bit VOP2/VOP3 ops whose VOP3 (_e64 / 8-byte encoding) form preserves the unwritten half of vdst.
+_INT16_VOP2_OPS = (
+    "v_lshrrev_b16", "v_lshlrev_b16", "v_ashrrev_i16", "v_add_u16", "v_sub_u16", "v_subrev_u16",
+    "v_mul_lo_u16", "v_max_u16", "v_min_u16", "v_max_i16", "v_min_i16", "v_and_b16", "v_or_b16",
+    "v_xor_b16", "v_add_i16", "v_sub_i16",
+)
+# 16-bit-suffixed or -prefixed mnemonics that write the full 32-bit destination register.
+_FULL32_V16_PREFIXES = (
+    "v_pk_", "v_pack_", "v_cvt_pk", "v_sat_pk", "v_sad_", "v_msad_", "v_qsad_", "v_mqsad_",
+    "v_cmp", "v_cmpx", "v_interp_p1", "v_dot", "v_cvt_f32_", "v_cvt_u32_", "v_cvt_i32_", "v_cvt_f64_",
+    "v_mad_i32_", "v_mad_u32_",
+)
+
+
+def _mod_int(mods, key, default):
+    for m in mods:
+        if m.startswith(key + ":"):
+            try:
+                return int(m.split(":", 1)[1], 0)
+            except ValueError:
+                return None
+    return default
+
+
+def _dpp_asym_row_mask(mods):
+    """True if a DPP row_mask treats rows 0..1 differently from rows 2..3 (or is malformed)."""
+    val = _mod_int(mods, "row_mask", 0xF)
+    return val is None or not 0 <= val <= 0xF or (val & 0x3) != ((val >> 2) & 0x3)
+
+
+def _preserves_dst(ins, op, mods):
+    """True when `ins` only partially overwrites its destination, keeping prior bits or lanes."""
+    if op in RMW_DEST:
+        return True
+    if ins["op"].endswith("_sdwa") and not op.startswith("v_cmp"):
+        dst_sel, dst_unused = "DWORD", "UNUSED_PAD"
+        for m in mods:
+            if m.startswith("dst_sel:"):
+                dst_sel = m.split(":", 1)[1]
+            elif m.startswith("dst_unused:"):
+                dst_unused = m.split(":", 1)[1]
+        return dst_sel != "DWORD" and dst_unused == "UNUSED_PRESERVE"
+    if "_dpp" in ins["op"] or any(m.startswith(("row_", "quad_perm", "dpp8:")) for m in mods):
+        row_mask = _mod_int(mods, "row_mask", 0xF)
+        bank_mask = _mod_int(mods, "bank_mask", 0xF)
+        bound = _mod_int(mods, "bound_ctrl", 0)
+        is_dpp8 = any(m.startswith("dpp8:") for m in mods)
+        if row_mask != 0xF or bank_mask != 0xF or (not is_dpp8 and bound != 1):
+            return True
+    if op in _INT16_VOP2_OPS:
+        enc = ins.get("enc")
+        return (len(enc) == 16) if enc else (ins["op"].endswith("_e64") or any(m.startswith("op_sel") for m in mods))
+    if op.startswith("v_") and not op.startswith(_FULL32_V16_PREFIXES) and (
+            op.endswith(("_f16", "_u16", "_i16", "_b16"))
+            or op.startswith(("v_cvt_f16_", "v_cvt_u16_", "v_cvt_i16_", "v_cvt_norm_i16_", "v_cvt_norm_u16_"))):
+        return True
+    if op.startswith(("image_load", "image_sample")) and "d16" in mods:
+        dmask = _mod_int(mods, "dmask", 0x1)
+        return dmask is None or ((dmask & 0xF).bit_count() % 2 == 1)
+    if op.startswith(("buffer_load_format", "tbuffer_load_format")) and "_d16" in op:
+        return not op.endswith(("_d16_xy", "_d16_xyzw"))
+    if op.startswith(LOADS) and ("_d16" in op or ("d16" in mods and not op.startswith("image_gather"))):
+        return True
+    return False
 
 
 def base_op(op):
@@ -257,6 +323,8 @@ def operands(ins):
         uses.append("vcc")
     if op in MOVREL_OPS:
         uses.append("m0")
+    if dests and _preserves_dst(ins, op, mods) and not any(x is dests[0] for x in srcs):
+        srcs = [dests[0], *srcs]
     return dests, srcs, defs, uses
 
 
@@ -836,8 +904,8 @@ class Analysis:
                 violation("cross-lane")
             return
         if op.startswith(("v_permlane", "ds_bpermute", "ds_permute", "ds_swizzle")) or "_dpp" in ins["op"] \
-                or any(m.startswith("row_") or m.startswith("quad_perm") for m in mods):
-            bad = any(m.startswith(DPP_BAD) for m in mods)
+                or any(m.startswith(("row_", "quad_perm", "dpp8:")) for m in mods):
+            bad = any(m.startswith(DPP_BAD) for m in mods) or _dpp_asym_row_mask(mods)
             put_t = t_src | (X if bad else 0)
             # a wave64 ds_bpermute/ds_permute works on each half (ISA 10.4.4) and uses address bits 2..6 only, so a
             # lane-id address that is the same modulo 128 in the wave and in a half reads/writes the same lane
