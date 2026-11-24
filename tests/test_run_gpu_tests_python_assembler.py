@@ -100,6 +100,38 @@ class PythonAssemblerTests(unittest.TestCase):
             self.assertEqual(rc, 2)
             self.assertIn("--disasm-dir is not a directory", err.getvalue())
 
+    def test_mesh_readback_honors_validator_selection(self) -> None:
+        name = "ms_v5_workgroup"
+        for no_validate, validator in ((False, None), (True, "spirv-val"), (False, "spirv-val")):
+            with self.subTest(no_validate=no_validate, validator=validator), tempfile.TemporaryDirectory() as tmp:
+                listing = Path(tmp) / (name + ".s")
+                listing.touch()
+                args = SimpleNamespace(assembler="python", no_validate=no_validate, disasm_dir=tmp,
+                                       filter=name, build=tmp, require_pass=True)
+                should_validate = validator is not None and not no_validate
+
+                def run(command, **kwargs):
+                    if command[0] == sys.executable:
+                        self.assertEqual("--no-validate" in command, not should_validate)
+                        (Path(tmp) / "spirv" / (name + ".spv")).touch()
+                        return 0, ""
+                    self.assertEqual(command[0], "spirv-val")
+                    return 1, "invalid mesh module"
+
+                output = io.StringIO()
+                with (patch.object(run_gpu_tests.shutil, "which", return_value=validator),
+                      patch.object(run_gpu_tests, "run_cmd", side_effect=run),
+                      patch.object(run_gpu_tests, "mesh_v5_test", return_value=None) as readback,
+                      patch.object(sys, "stdout", output)):
+                    status = run_gpu_tests.run_suite(args, tmp)
+                if should_validate:
+                    self.assertEqual(status, 1, output.getvalue())
+                    self.assertIn("invalid mesh module", output.getvalue())
+                    readback.assert_not_called()
+                else:
+                    self.assertEqual(status, 0, output.getvalue())
+                    readback.assert_called_once()
+
     def test_run_suite_reuses_existing_work_listings(self) -> None:
         listing = b"; synthetic\n\ts_endpgm\n"
         run_command = run_gpu_tests.run_cmd
