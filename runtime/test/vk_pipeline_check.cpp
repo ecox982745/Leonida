@@ -1243,6 +1243,8 @@ int main(int argc, char** argv) {
     // These capability requirements apply as soon as the module is passed to Vulkan.
     auto check_missing_module_feature = [&](const ShaderMeta& meta) -> std::string {
         for (const auto& feat : meta.features) {
+            if (feat == "shaderBufferInt64Atomics" && !f12.shaderBufferInt64Atomics)
+                return "no " + feat;
             if (feat == "shaderSampledImageArrayDynamicIndexing" && !f2.features.shaderSampledImageArrayDynamicIndexing)
                 return "no " + feat;
             if (feat == "shaderStorageImageArrayDynamicIndexing" && !f2.features.shaderStorageImageArrayDynamicIndexing)
