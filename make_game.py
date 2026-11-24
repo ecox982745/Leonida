@@ -1538,10 +1538,11 @@ def bvh_shaders(game: str, work: str, mc_signature: str, jobs: int = 1, emulate:
 
 WAVE64_MODES = ("auto", "on", "off")
 
-# The translator's fallback flags make_game.py can forward, and the argparse attribute each one reads.
+# Translation options recorded with the shader cache, and the argparse attribute each one reads.
 FALLBACK_FLAGS = (("--no-float-controls", "no_float_controls"), ("--bary-fallback", "bary_fallback"),
                   ("--texel-offset-fallback", "texel_offset_fallback"), ("--mesh-compute", "mesh_compute"),
-                  ("--f16-interp-fallback", "f16_interp_fallback"), ("--pc-tail-ubo", "pc_tail_ubo"))
+                  ("--f16-interp-fallback", "f16_interp_fallback"), ("--pc-tail-ubo", "pc_tail_ubo"),
+                  ("--int64-atomics", "int64_atomics"))
 
 
 def fallback_flags(a) -> tuple[str, ...]:
@@ -2744,6 +2745,9 @@ def main() -> int:
     ap.add_argument("--texel-offset-fallback", action="store_true",
                     help="fold the run-time texel offset of image_sample*_o into the coordinate, for devices "
                          "without VK_KHR_maintenance8")
+    ap.add_argument("--int64-atomics", action="store_true",
+                    help="translate 64-bit buffer and global swaps as one atomic exchange. Requires "
+                         "shaderBufferInt64Atomics enabled on the target Vulkan device")
     ap.add_argument("--f16-interp-fallback", action="store_true",
                     help="16-bit interpolation from decoded halves the vertex/mesh shader exports instead of "
                          "PerVertexKHR inputs; on by itself when the runtime's GPU can't use them (MoltenVK)")

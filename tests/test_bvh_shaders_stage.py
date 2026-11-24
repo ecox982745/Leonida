@@ -352,6 +352,7 @@ class ShadersStageWithTheDlls(unittest.TestCase):
             with open(dll, "wb") as f:
                 f.write(dll_like(builder_container("SortKeys", fssm_blob(1))))
             ran = []
+            atomic_modes = []
             dxbc = os.path.join(work, "shaders", "dxbc")
             bvh = os.path.join(work, "shaders", "bvh")
 
@@ -375,6 +376,7 @@ class ShadersStageWithTheDlls(unittest.TestCase):
                     write("s_endpgm\n", bvh if builder else dxbc, "disasm",
                           ("SortKeys" if builder else "shader") + ".s")
                 elif tool_name == "rdna2spirv.py":
+                    atomic_modes.append("--int64-atomics" in args)
                     out = args[args.index("--out") + 1]
                     # the FSPX step keeps its output only when the index names a program whose module is there
                     name = "SortKeys" if builder else "Upscale"
@@ -384,16 +386,18 @@ class ShadersStageWithTheDlls(unittest.TestCase):
 
             def fake_translate(disasm, spirv, jobs, emulate=False, fallbacks=()):
                 ran.append("translate")
+                atomic_modes.append("--int64-atomics" in fallbacks)
                 write("", spirv, "index.json")
 
-            def stage():
+            def stage(flags=()):
                 ran.clear()
+                atomic_modes.clear()
                 with mock.patch.object(make_game, "py", fake_py), \
                         mock.patch.object(make_game, "need", lambda *a: None), \
                         mock.patch.object(make_game, "translate", fake_translate), \
                         mock.patch.object(make_game, "llvm_mc_signature", return_value="llvm-mc 23"), \
                         mock.patch.object(make_game, "log", lambda *a: None):
-                    make_game.shaders(game, work, 2)
+                    make_game.shaders(game, work, 2, fallbacks=flags)
                 return list(ran)
 
             self.assertEqual(stage(), ["shader_carve.py", "fssm_unpack.py", "shader_disasm.py", "translate",
@@ -407,6 +411,11 @@ class ShadersStageWithTheDlls(unittest.TestCase):
             self.assertEqual(stage(), ["fspx_unpack.py", "rdna2spirv.py"])
             for sub in ((), ("fspx",), ("bvh",)):
                 self.assertTrue(os.path.isfile(os.path.join(work, "shaders", "spirv", *sub, "index.json")))
+            stage(("--int64-atomics",))
+            self.assertEqual(atomic_modes, [True, True, True])    # corpus, FSPX, BVH
+            self.assertEqual(stage(("--int64-atomics",)), [])
+            stage()
+            self.assertEqual(atomic_modes, [False, False, False])
 
 
 if __name__ == "__main__":

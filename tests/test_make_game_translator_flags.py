@@ -206,8 +206,8 @@ class MainWiringTest(unittest.TestCase):
         return preflight.call_args.kwargs["fallbacks"], shaders.call_args.kwargs["fallbacks"]
 
     def test_the_flags_reach_the_shaders_stage(self):
-        pre, sh = self.run_main("--no-float-controls", "--bary-fallback", "--mesh-compute")
-        self.assertEqual(pre, ("--no-float-controls", "--bary-fallback", "--mesh-compute"))
+        pre, sh = self.run_main("--no-float-controls", "--bary-fallback", "--mesh-compute", "--int64-atomics")
+        self.assertEqual(pre, ("--no-float-controls", "--bary-fallback", "--mesh-compute", "--int64-atomics"))
         self.assertEqual(sh, pre)
 
     def test_no_flags_by_default(self):

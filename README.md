@@ -165,6 +165,10 @@ skips a shader without `shaderSignedZeroInfNanPreserveFloat32`; needs PR #664's 
 on by itself on Intel's Windows Vulkan driver, whose native mesh draws crash, BUILD-2202, unless `--native-mesh`).
 Each is documented in [docs/design.md](docs/design.md).
 
+Use `--int64-atomics` when the target Vulkan runtime enables `shaderBufferInt64Atomics`.
+It translates `global_atomic_swap_x2` and `buffer_atomic_swap_x2` into single 64-bit exchanges so
+concurrent writers exchange complete values. Adding or removing the option rebuilds the affected shader caches.
+
 The build records which llvm-mc command and version produced the disassembly. Changing either, or reusing a work
 folder that predates this record, reruns disassembly and translation while keeping the extracted shader inputs.
 
