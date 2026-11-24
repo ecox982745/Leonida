@@ -9527,6 +9527,8 @@ HRESULT create_vulkan_device_standalone(REFIID riid, void** out, QueueTestSettin
     enable12.separateDepthStencilLayouts = VK_TRUE;
     info.buffer_device_address = chosen12.bufferDeviceAddress == VK_TRUE;
     enable12.bufferDeviceAddress = info.buffer_device_address ? VK_TRUE : VK_FALSE;
+    // Translated swap_x2 shaders may use a 64-bit atomic on a physical storage buffer.
+    enable12.shaderBufferInt64Atomics = chosen12.shaderBufferInt64Atomics;
     info.storage_buffer_8bit = chosen12.storageBuffer8BitAccess == VK_TRUE;
     enable12.storageBuffer8BitAccess = info.storage_buffer_8bit;
     // Where the GPU has them: what the bindless set 0 needs (VulkanDeviceInfo::bindless), and the sampler features
