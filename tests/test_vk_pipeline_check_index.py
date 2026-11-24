@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 class ModuleFeatureGateTest(unittest.TestCase):
-    def test_dynamic_image_indexing_is_gated_before_module_creation(self):
+    def test_module_capabilities_are_gated_before_module_creation(self):
         # Check the worker's ordering without sending a module to an unsupported Vulkan device.
         source = (ROOT / "runtime" / "test" / "vk_pipeline_check.cpp").read_text(encoding="utf-8")
         before_worker, _, worker = source.partition("auto worker = [&] {")
@@ -25,6 +25,7 @@ class ModuleFeatureGateTest(unittest.TestCase):
         for feature in ("shaderSampledImageArrayDynamicIndexing", "shaderStorageImageArrayDynamicIndexing"):
             with self.subTest(feature=feature):
                 self.assertIn(f'feat == "{feature}" && !f2.features.{feature}', module_check)
+        self.assertIn('feat == "shaderBufferInt64Atomics" && !f12.shaderBufferInt64Atomics', module_check)
         before_create, create, _ = worker.partition("mod_ok = vkCreateShaderModule(")
         self.assertTrue(create, "expected the worker's Vulkan module creation call")
         self.assertRegex(before_create,
