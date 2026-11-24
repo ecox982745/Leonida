@@ -13,6 +13,7 @@ proven uniform for the v_readlane_b32 rewrite in tools/rdna2spirv.py.
     python -I tests/semantic/test_wave64_halves_partial_dst.py
 """
 import os
+from pathlib import Path
 import sys
 import unittest
 
@@ -271,6 +272,51 @@ class PartialDestSoundnessTests(unittest.TestCase):
         ])
 
     # -- 4. Partial d16 loads and operands() edge cases
+    def test_d16_xyz_result_words(self):
+        fixture = Path(HERE) / "fixtures" / "ps_wave64_d16_xyz.asm"
+        lines = [line.strip() for line in fixture.read_text(encoding="ascii").splitlines()
+                 if line.strip() and not line.lstrip().startswith(";")]
+        with self.subTest(fixture=fixture.name):
+            (tier, _, _), _ = meta_of("ps_wave64_d16_xyz", lines)
+            self.assertEqual(tier, "A")
+
+        for op, fmt in (("buffer_load_format_d16_xyz", ""),
+                        ("tbuffer_load_format_d16_xyz", " format:[BUF_FMT_16_16_16_16_FLOAT]")):
+            for seed, address, export, expected in (
+                    (6, 5, 6, "A"), (6, 5, 7, "A"), (7, 5, 6, "A"), (7, 5, 7, "C"),
+                    (6, 6, 6, "C"), (6, 6, 7, "C"), (7, 7, 6, "C"), (7, 7, 7, "C")):
+                with self.subTest(op=op, seed=seed, address=address, export=export):
+                    program = [
+                        "s_mov_b64 s[10:11], exec",
+                        "v_mov_b32_e32 v5, 0", "v_mov_b32_e32 v6, 0", "v_mov_b32_e32 v7, 0",
+                        f"v_mbcnt_lo_u32_b32 v{seed}, -1, 0",
+                        f"v_mbcnt_hi_u32_b32 v{seed}, -1, v{seed}",
+                        f"v_lshlrev_b32_e32 v{seed}, 16, v{seed}",
+                        f"{op} v[6:7], v{address}, s[0:3], 0{fmt} offen",
+                        f"exp mrt0 v{export}, v{export}, v{export}, v{export} done vm", "s_endpgm",
+                    ]
+                    (tier, reasons, _), _ = meta_of("ps_d16_word", program)
+                    self.assertEqual(tier, expected, reasons)
+
+    def test_d16_xyz_descriptor_lane_and_partial_exec(self):
+        for export in (6, 7):
+            (tier, reasons, _), _ = meta_of("ps_d16_tid", [
+                "s_mov_b64 s[10:11], exec", "s_mov_b32 s3, 0x00800000",
+                "v_mov_b32_e32 v5, 0", "v_mov_b32_e32 v6, 0", "v_mov_b32_e32 v7, 0",
+                "buffer_load_format_d16_xyz v[6:7], v5, s[0:3], 0 offen",
+                f"exp mrt0 v{export}, v{export}, v{export}, v{export} done vm", "s_endpgm",
+            ])
+            self.assertEqual(tier, "C", reasons)
+
+        (tier, reasons, _), _ = meta_of("ps_d16_masked", [
+            "s_mov_b64 s[10:11], exec",
+            "v_mbcnt_lo_u32_b32 v6, -1, 0", "v_mbcnt_hi_u32_b32 v6, -1, v6",
+            "v_mov_b32_e32 v5, 0", "v_cmp_eq_u32_e32 vcc, 0, v0", "s_and_saveexec_b64 s[12:13], vcc",
+            "buffer_load_format_d16_xyz v[6:7], v5, s[0:3], 0 offen",
+            "s_mov_b64 exec, s[12:13]", "exp mrt0 v6, v6, v6, v6 done vm", "s_endpgm",
+        ])
+        self.assertEqual(tier, "C", reasons)
+
     def test_partial_d16_loads_preserve_prior_taint(self):
         for tag, body in (
                 ("global_short_d16", [

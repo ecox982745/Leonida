@@ -619,9 +619,9 @@ class Analysis:
             if ev is not None:
                 ev["idioms"].add(name)
 
-        def src_taint():
+        def src_taint(inputs):
             t = 0
-            for x in srcs:
+            for x in inputs:
                 t |= self.rd(st, ins, x)
             for r in uses:
                 t |= T.get(r, 0) | (CTRL if (id(ins), r) in self.stale else 0)
@@ -767,7 +767,7 @@ class Analysis:
                 put(dests[0], BASE | (ELECT if elected else 0), ("elect", st["xg"][1]) if elected else None)
             return
 
-        t_src = src_taint()
+        t_src = src_taint(srcs)
         # a lane mask read as data (not as a mask operand of a mask instruction, a select or an exec write): on
         # hardware it is the 64 lane bits, here the bits of the lanes of the half
         md = 0
@@ -783,7 +783,20 @@ class Analysis:
                     md |= MASKD | X
         t_src |= md
         if op.startswith(("buffer_load", "tbuffer_load")):
-            t_src |= self.add_tid_lane(n, i, a, mods)
+            implicit_lane = self.add_tid_lane(n, i, a, mods)
+            t_src |= implicit_lane
+            if (op in ("buffer_load_format_d16_xyz", "tbuffer_load_format_d16_xyz")
+                    and len(a) >= 3 and a[0].get("k") == "vgpr" and a[0].get("n") == 2 and st["f"]
+                    and not t_src & (TAG_BITS | BASE | CNT)):
+                # Full EXEC overwrites X/Y. Only Z keeps the upper half of its old word.
+                # Leave masked writes and proof-carrying values to the conservative transfer below.
+                xy = {"k": "vgpr", "r": a[0]["r"]}
+                z = {"k": "vgpr", "r": a[0]["r"] + 1}
+                address = src_taint(a[1:]) | md | implicit_lane
+                packed_z = address | self.rd(st, ins, z)
+                put(xy, address)
+                put(z, packed_z)
+                return
 
         # --- lane masks and counts
         if op in ("s_bcnt1_i32_b64", "s_ff1_i32_b64") and len(a) == 2 and self.is_mask(ins, a[1]):
