@@ -10,6 +10,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest import mock
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -152,18 +153,53 @@ class ManagerTests(unittest.TestCase):
             game = Path(tmp, "game")
             port.mkdir()
             game.mkdir()
-            port.joinpath("gta6rt.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+            exe_name = "gta6rt.exe" if os.name == "nt" else "gta6rt.sh"
+            if exe_name == "gta6rt.exe":
+                port.joinpath(exe_name).write_bytes(b"MZ")
+            else:
+                port.joinpath(exe_name).write_text("#!/bin/sh\n", encoding="utf-8")
             port.joinpath("game_path.txt").write_text(str(game) + "\n", encoding="utf-8")
             image = game / leonida_mods.EXPECTED_EXE
             image.write_bytes(b"MZ")
             code, out, err = cli("--port", str(port), "run", "--dry-run", "--print",
                                  "--archetype-lookup", "1A2B3C0", "--", "--windowed")
             self.assertEqual((code, err), (0, ""))
+            self.assertIn(os.path.join(str(port), exe_name), out)
             self.assertIn(" --dry-run ", " " + out)
             self.assertIn("--mods", out)
             self.assertIn(os.path.join(str(port), "mods"), out)
             self.assertIn("--archetype-lookup 1A2B3C0", out)
             self.assertTrue(out.rstrip().endswith("--windowed"))
+
+    def test_runtime_executable_selects_platform_launcher(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sh_only = Path(tmp, "sh_only")
+            sh_only.mkdir()
+            (sh_only / "gta6rt.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+
+            both = Path(tmp, "both")
+            both.mkdir()
+            both_sh = both / "gta6rt.sh"
+            both_exe = both / "gta6rt.exe"
+            both_sh.write_text("#!/bin/sh\n", encoding="utf-8")
+            both_exe.write_bytes(b"MZ")
+
+            exe_only = Path(tmp, "exe_only")
+            exe_only.mkdir()
+            only_exe = exe_only / "gta6rt.exe"
+            only_exe.write_bytes(b"MZ")
+
+            sh_only_str, both_str, exe_only_str = str(sh_only), str(both), str(exe_only)
+            both_sh_str, both_exe_str, only_exe_str = str(both_sh), str(both_exe), str(only_exe)
+
+            with mock.patch.object(leonida_mods.os, "name", "nt"):
+                with self.assertRaises(leonida_mods.ModsError):
+                    leonida_mods.runtime_executable(sh_only_str)
+                self.assertEqual(leonida_mods.runtime_executable(both_str), both_exe_str)
+
+            with mock.patch.object(leonida_mods.os, "name", "posix"):
+                self.assertEqual(leonida_mods.runtime_executable(both_str), both_sh_str)
+                self.assertEqual(leonida_mods.runtime_executable(exe_only_str), only_exe_str)
 
 
 class SamplesAndGuiTests(unittest.TestCase):

@@ -255,11 +255,15 @@ class CheckNoGameData(unittest.TestCase):
         result = run([os.path.join(self.dir, "sub"), os.path.join(self.dir, "missing.bin")])
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
-    def run_with_unreadable(self, locked, paths):
-        """main() in this process with open() refusing `locked`; (exit status, stdout, stderr)."""
+    def load_module(self):
         spec = importlib.util.spec_from_file_location("check_no_game_data_under_test", SCRIPT)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
+        return module
+
+    def run_with_unreadable(self, locked, paths):
+        """main() in this process with open() refusing `locked`; (exit status, stdout, stderr)."""
+        module = self.load_module()
         real_open = open
 
         def refusing_open(file, *args, **kwargs):
@@ -288,7 +292,11 @@ class CheckNoGameData(unittest.TestCase):
         # the other files are still scanned; a real match wins over the unreadable one
         rc, out, err = self.run_with_unreadable(locked, [locked, sibling, clean])
         self.assertEqual(rc, 1, out + err)
-        self.assertEqual(out.splitlines(), [f"{os.path.relpath(sibling)}: DDS texture"], out)
+        try:
+            expected_sibling = os.path.relpath(sibling)
+        except ValueError:  # Windows: temporary directory and checkout on different drives
+            expected_sibling = sibling
+        self.assertEqual(out.splitlines(), [f"{expected_sibling}: DDS texture"], out)
         self.assertIn("cannot read", err)
         self.assertIn("1 file(s) start like game data", err)
         self.assertNotIn("Traceback", err)
@@ -297,6 +305,19 @@ class CheckNoGameData(unittest.TestCase):
         rc, out, err = self.run_with_unreadable(locked, [locked, pe])
         self.assertEqual(rc, 1, out + err)
         self.assertIn("PE executable", out)
+
+    def test_cross_drive_relpath_falls_back_to_original_path(self):
+        sibling = self.write("sibling.bin", b"DDS " + bytes(12))
+        module = self.load_module()
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(module.os.path, "relpath",
+                               side_effect=ValueError("path is on mount 'C:', start on mount 'D:'")), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = module.main([sibling])
+        self.assertEqual(rc, 1, out.getvalue() + err.getvalue())
+        self.assertEqual(out.getvalue().splitlines(), [f"{sibling}: DDS texture"])
+        self.assertIn("1 file(s) start like game data", err.getvalue())
+        self.assertNotIn("Traceback", err.getvalue())
 
     @unittest.skipUnless(shutil.which("git"), "git not installed")
     def test_default_mode_reads_tracked_files_only(self):

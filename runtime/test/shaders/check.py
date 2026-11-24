@@ -589,6 +589,12 @@ MIP_TEST_MODES = {SIGNED_MIP_TEST: "--two-mip-sint", UINT_MIP_TEST: "--two-mip-u
 STORE_IMAGES = ("uint", "sint", "volume")
 STORE_FILL = (lambda i: 100 + i, lambda i: -2 * i & 0xFFFFFFFF, lambda i: 200 + i)
 STORE_WORDS = {
+    # Only even lanes update the two uint rows. The sint rows capture GLC write-back and non-GLC preservation.
+    "cs_image_atomic_exec": (
+        {i: 100 + i + (7 if i < 8 else 11) for i in range(0, 16, 2)},
+        dict(enumerate([100, 7, 102, 7, 104, 7, 106, 7] + [11] * 8)),
+        {},
+    ),
     # 2D image atomics: the texel afterwards (uint image) and the data register afterwards (sint image) of cases
     # 0..15, then the texel 64 threads each added 1 to
     "cs_imgatomic": (dict(enumerate([0x54, 0xFFFFFF9D, 0x06, 0xF067, 0x97, 0xFFFFFFF0, 0x6A, 0x6B,
@@ -603,6 +609,13 @@ STORE_WORDS = {
     "cs_resinfo": ({**dict(enumerate([16, 4, 0, 5, 8, 2, 0, 5, 2, 1, 0, 5, 4, 1, 0xABCD])), 16: 2, 17: 5, 18: 5,
                     20: 0, 21: 0, 22: 0, 23: 5},
                    {}, {}),
+    # TFE leaves both seeded status words intact. D16 updates only the low half of its single data word.
+    "cs_image_tfe_dense": ({}, dict(enumerate([
+        0, 100, 101, 102, 0, 0, 0, 0,
+        *[0x5A5A03F5] * 8,
+        0x5A5A0000, 0x5A5A0064, 0x5A5A0065, 0x5A5A0066, *[0x5A5A0000] * 4,
+        *[0x5A5A03F6] * 8,
+    ])), {}),
 }
 # TEST-184: image_get_lod on vk_texture_test's textures. Per fixture, its draws: S# word 1 (MIN_LOD [11:0], MAX_LOD
 # [23:12], 4.8 fixed point), whether the two-mip texture is drawn, and mrt0, as derived in the .asm header:

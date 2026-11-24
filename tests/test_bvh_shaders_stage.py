@@ -376,10 +376,10 @@ class ShadersStageWithTheDlls(unittest.TestCase):
                           ("SortKeys" if builder else "shader") + ".s")
                 elif tool_name == "rdna2spirv.py":
                     out = args[args.index("--out") + 1]
-                    # the FSPX step keeps its output only when the index names a program whose module is there
+                    # Both embedded shader caches require a runtime lookup key and its module.
                     name = "SortKeys" if builder else "Upscale"
-                    write('{"%s": {"stage": "cs", "fssm_sha256": "%s"}}' % (name, "a" * 64) if builder else
-                          '{"%s": {"stage": "cs"}}' % name, out, "index.json")
+                    key = "fssm_sha256" if builder else "fspx_code_sha256"
+                    write(json.dumps({name: {"stage": "cs", key: "a" * 64}}), out, "index.json")
                     write("", out, name + ".spv")
 
             def fake_translate(disasm, spirv, jobs, emulate=False, fallbacks=()):

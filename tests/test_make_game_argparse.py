@@ -351,8 +351,9 @@ class JobsHandlingTest(unittest.TestCase):
             out = os.path.join(tmp, "out")
             work = os.path.join(tmp, "work")
             os.makedirs(game)
-            with patch.object(sys, "argv", ["make_game.py", "--game", game, "--out", out, "--work", work,
-                                            "--no-tui", "--stages", "shaders", "--jobs", "6"]):
+            with patch("os.cpu_count", return_value=16), \
+                    patch.object(sys, "argv", ["make_game.py", "--game", game, "--out", out, "--work", work,
+                                               "--no-tui", "--stages", "shaders", "--jobs", "6"]):
                 with patch("make_game.below_normal"):
                     with patch("make_game.check", return_value={"expected_exe": "g.exe"}):
                         with patch("make_game.preflight") as mock_preflight:
@@ -378,8 +379,9 @@ class JobsHandlingTest(unittest.TestCase):
             out = os.path.join(tmp, "out")
             work = os.path.join(tmp, "work")
             os.makedirs(game)
-            with patch.object(sys, "argv", ["make_game.py", "--game", game, "--out", out, "--work", work,
-                                            "--no-tui", "--stages", "assets", "--wav", "--jobs", "10"]):
+            with patch("os.cpu_count", return_value=16), \
+                    patch.object(sys, "argv", ["make_game.py", "--game", game, "--out", out, "--work", work,
+                                               "--no-tui", "--stages", "assets", "--wav", "--jobs", "10"]):
                 with patch("make_game.below_normal"):
                     with patch("make_game.check", return_value={"expected_exe": "g.exe"}):
                         with patch("make_game.preflight"):
@@ -389,6 +391,25 @@ class JobsHandlingTest(unittest.TestCase):
                                     self.assertEqual(ret, 0)
                                     mock_assets.assert_called_once_with(
                                         os.path.abspath(game), os.path.abspath(work), True, 10, dump_jobs=None)
+
+    def test_custom_jobs_clamped_to_cpu_count(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            game = os.path.join(tmp, "game")
+            out = os.path.join(tmp, "out")
+            work = os.path.join(tmp, "work")
+            os.makedirs(game)
+            with patch("os.cpu_count", return_value=4), \
+                    patch.object(sys, "argv", ["make_game.py", "--game", game, "--out", out, "--work", work,
+                                               "--no-tui", "--stages", "assets", "--wav", "--jobs", "10"]):
+                with patch("make_game.below_normal"), \
+                        patch("make_game.check", return_value={"expected_exe": "g.exe"}), \
+                        patch("make_game.preflight"), \
+                        patch("make_game.log"), \
+                        patch("make_game.assets") as mock_assets:
+                    ret = make_game.main()
+                    self.assertEqual(ret, 0)
+                    mock_assets.assert_called_once_with(
+                        os.path.abspath(game), os.path.abspath(work), True, 4, dump_jobs=None)
 
     def test_translate_spawns_exact_job_count(self):
         with tempfile.TemporaryDirectory() as tmp:

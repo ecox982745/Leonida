@@ -93,16 +93,43 @@ are installed disabled so a copied folder cannot surprise anyone or silently fig
 | `game_version` | The package version the mod was made for. |
 | `archetype_swaps` | Each entry: when the game asks for the model `from`, it gets `to`. |
 
-`from` and `to` are model names, hashed with `joaat` (lower case, as the game does), or 32-bit hashes
-written `0x…`. A swap is one step: a model swapped to another that is itself swapped is not followed
-again, so two mods cannot loop. `when` is `always`; a narrower condition (one mission, one cutscene) is
-refused until a hook provides the game's mission state, so a mod never silently does more than it says.
+`from` and `to` are model names, hashed with `joaat` (ASCII letters lower-cased; see
+[Name hashes](#name-hashes)), or 32-bit hashes written `0x…`. A swap is one step: a model swapped to another
+that is itself swapped is not followed again, so two mods cannot loop. `when` is `always`; a narrower condition
+(one mission, one cutscene) is refused until a hook provides the game's mission state, so a mod never silently
+does more than it says.
 
 `mod.json` is UTF-8. A byte-order mark in front is accepted (Notepad's "UTF-8 with BOM", Windows
 PowerShell 5.1's `-Encoding utf8`). A UTF-16 file, which PowerShell 5.1's `>` writes, is skipped with
 `mod.json is UTF-16; save it as UTF-8`.
 
 The format is in `runtime/src/mods.h`; `runtime/test/mods_test.cpp` (ctest `mods`) covers it.
+
+## Name hashes
+
+A model name in `mod.json` is hashed with Jenkins one-at-a-time over its UTF-8 bytes, with ASCII `A`-`Z`
+lower-cased and every other byte left as it is. This is the mod contract, followed by `runtime/src/mods.h` and
+`tools/leonida_mods.py`. The hash dictionary follows another one: `tools/hashdict.py` and the tools that resolve
+names with it lower-case every character and hash its Latin-1 byte, with `?` for a character that is still above
+U+00FF after lower-casing.
+
+The two give the same hash for an ASCII name and hash different bytes for any other: `é` is `C3 A9` in the mod
+contract and `E9` in the dictionary's, `É` stays `C3 89` in the mod contract but is folded to `é` (`E9`) in the
+dictionary's, and `Ω` is `CE A9` against `?`. Neither contract establishes how the game hashes a non-ASCII model
+name; that is not measured.
+
+`tests/test_joaat_agreement.py` holds every dictionary copy in `tools/` to `hashdict.joaat`, and checks the mod
+contract in Python, and through `runtime/test/mods_test.cpp` in C++, against one table of synthetic vectors (ASCII,
+upper case, accented letters, a character outside Latin-1 and one outside the Basic Multilingual Plane, given as
+UTF-8 bytes). The vectors show that the two implementations hash the same bytes alike; they are not an end-to-end
+claim for every way a name can be written in `mod.json`.
+
+**Known limitation: escaped surrogate pairs.** The runtime's JSON reader writes each half of an escaped surrogate
+pair as its own three-byte sequence: `smile_\ud83d\ude00` is read as `smile_` followed by `ED A0 BD ED B8 80`,
+while Python's `json`, and so `leonida_mods.py`, reads one character with the UTF-8 bytes `F0 9F 98 80`. The two
+hashes differ. Both test files record the current behaviour with that synthetic name. No end-to-end parity is
+claimed for characters outside the Basic Multilingual Plane until the reader is changed, which is a separate
+proposal.
 
 ## The Mandy mod (`mods/mandy_prison_intro`)
 

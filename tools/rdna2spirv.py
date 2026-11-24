@@ -1585,7 +1585,15 @@ class Gen:
         return r
 
     def set_exec(self, mask_u):
-        self.emit(f"OpStore %active {self.tmp_bool_nz(mask_u)}")
+        """EXEC = this lane's bit of the computed 32-bit word: lane L takes bit L mod 32 (SHADER-1264). A value
+        already in mask representation (all-ones / zero per lane) gives back the same bit, so mask writes keep
+        working. Testing the word for non-zero instead turned every lane of the half on for a computed value."""
+        lane = self.wave_lane()
+        rel, shr, bit = self.tmp(), self.tmp(), self.tmp()
+        self.emit(f"{rel} = OpBitwiseAnd %uint {lane} {self.cu(31)}")
+        self.emit(f"{shr} = OpShiftRightLogical %uint {mask_u} {rel}")
+        self.emit(f"{bit} = OpBitwiseAnd %uint {shr} {self.cu(1)}")
+        self.emit(f"OpStore %active {self.tmp_bool_nz(bit)}")
         self.uses_active = True
 
     def vcc_half_keeps_mask(self):
@@ -5873,8 +5881,9 @@ class Gen:
 
     def exec_half_write(self, half, val, const=None):
         """Write one 32-bit half of EXEC. In the per-lane model a lane is active iff its bit is set. A constant
-        sets each lane from its own bit; a register value (mask representation: all-ones / zero per lane) sets
-        the lanes of that half from their own copy. Lanes of the other half are unchanged."""
+        sets each lane from its own bit; a register value sets the lanes of that half from their own bit too
+        (SHADER-1264: a computed word used to set every lane of the half when it was non-zero). A value already
+        in mask representation (all-ones / zero per lane) gives back the same bit. The other half is unchanged."""
         lane = self.wave_lane()
         rel, inh, bit, on, cur, new = (self.tmp() for _ in range(6))
         if half == 0:
@@ -5894,7 +5903,11 @@ class Gen:
             self.emit(f"{bit} = OpBitwiseAnd %uint {shr} {self.cu(1)}")
             self.emit(f"{on} = OpINotEqual %bool {bit} {self.cu(0)}")
         else:
-            self.emit(f"{on} = OpINotEqual %bool {val} {self.cu(0)}")
+            r31, shr = self.tmp(), self.tmp()
+            self.emit(f"{r31} = OpBitwiseAnd %uint {rel} {self.cu(31)}")
+            self.emit(f"{shr} = OpShiftRightLogical %uint {val} {r31}")
+            self.emit(f"{bit} = OpBitwiseAnd %uint {shr} {self.cu(1)}")
+            self.emit(f"{on} = OpINotEqual %bool {bit} {self.cu(0)}")
         self.emit(f"{cur} = OpLoad %bool %active")
         self.emit(f"{new} = OpSelect %bool {inh} {on} {cur}")
         self.emit(f"OpStore %active {new}")
@@ -7385,20 +7398,12 @@ class Gen:
                 raise Unsupported("gs sendmsg " + t)
             return
         if op == "s_sendmsg" and a and "MSG_GS_ALLOC_REQ" in a[0].get("t", "") and self.stage == "ms":
-            # SHADER-766: only invocation 0 stores the workgroup counts to avoid SharedMemoryDataRace-RaceOnStore.
-            # The counts are uniform (from SGPR m0), and all invocations synchronize at the post-alloc barrier.
+            # SHADER-766: use an atomic workgroup store so concurrent lanes/waves never cause
+            # SharedMemoryDataRace-RaceOnStore, while still storing %ms_counts when a non-zero
+            # wave (e.g. wave 1 in ms_wave_info_s3, where local_index != 0) sends the alloc.
             m = self.tmp()
             self.emit(f"{m} = OpLoad %uint %m0")
-            li = self.local_index()
-            is_lead = self.tmp()
-            self.emit(f"{is_lead} = OpIEqual %bool {li} {self.cu(0)}")
-            do_lbl, end_lbl = self.tmp() + "_alloc_do", self.tmp() + "_alloc_end"
-            self.emit(f"OpSelectionMerge {end_lbl} None")
-            self.emit(f"OpBranchConditional {is_lead} {do_lbl} {end_lbl}")
-            self.emit(f"{do_lbl} = OpLabel")
-            self.emit(f"OpStore %ms_counts {m}")
-            self.emit(f"OpBranch {end_lbl}")
-            self.emit(f"{end_lbl} = OpLabel")
+            self.emit(f"OpAtomicStore %ms_counts {self.cu(2)} {self.cu(0)} {m}")
             self.ms_alloc = True
             return
         if op == "s_sendmsg" and a and "MSG_ORDERED_PS_DONE" in a[0].get("t", ""):

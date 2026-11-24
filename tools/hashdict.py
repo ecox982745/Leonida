@@ -42,6 +42,12 @@ CONTINUATION_BLOCK = 65536
 
 
 def joaat(s: str) -> int:
+    """The dictionary contract: lower-case the text, then hash its Latin-1 bytes (``?`` for what is still
+    above U+00FF).
+
+    Every name-resolving copy in tools/ hashes this way (tests/test_joaat_agreement.py). mod.json names
+    follow the mod contract instead: UTF-8 bytes, ASCII-only lower-casing (docs/modding.md, "Name hashes").
+    """
     h = 0
     for c in s.lower().encode("latin-1", "replace"):
         h = (h + c) & 0xFFFFFFFF

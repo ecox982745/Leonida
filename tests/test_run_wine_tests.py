@@ -525,13 +525,39 @@ class MainTest(unittest.TestCase):
 
     def test_relative_root_launches_the_artifact_from_its_working_directory(self):
         (self.artifact / "check_cwd.py").write_text(
-            "from pathlib import Path\nassert Path.cwd() == Path(__file__).resolve().parent\n",
+            "from pathlib import Path\nassert Path.cwd().resolve() == Path(__file__).resolve().parent\n",
             encoding="utf-8", newline="\n")
         entry = ctest_entry("ok", self.command("check_cwd.py"))
         with contextlib.chdir(self.root):
             code, out, _ = self.run_main([entry], "--require", "ok", root=".")
         self.assertEqual(code, 0, out)
         self.assertIn("[PASS] ok", out)
+
+    def test_aliased_relative_root_launches_the_artifact_from_its_working_directory(self):
+        (self.artifact / "check_cwd.py").write_text(
+            "from pathlib import Path\nassert Path.cwd().resolve() == Path(__file__).resolve().parent\n",
+            encoding="utf-8", newline="\n")
+        alias = self.root.parent / (self.root.name + "_alias")
+        if os.name == "nt":
+            res = subprocess.run(["cmd", "/c", "mklink", "/J", str(alias), str(self.root)],
+                                 capture_output=True, text=True)
+            if res.returncode:
+                self.skipTest("cannot create a directory junction: " + res.stderr)
+            remove_alias = os.rmdir
+        else:
+            try:
+                os.symlink(self.root, alias, target_is_directory=True)
+            except OSError as exc:
+                self.skipTest(f"cannot create a directory symlink: {exc}")
+            remove_alias = os.unlink
+        try:
+            entry = ctest_entry("ok", self.command("check_cwd.py"))
+            with contextlib.chdir(alias):
+                code, out, _ = self.run_main([entry], "--require", "ok", root=".")
+            self.assertEqual(code, 0, out)
+            self.assertIn("[PASS] ok", out)
+        finally:
+            remove_alias(alias)
 
     @unittest.skipUnless(os.name == "posix", "uses a symlink as a Wine executable")
     def test_relative_wine_command_is_resolved_before_changing_directories(self):

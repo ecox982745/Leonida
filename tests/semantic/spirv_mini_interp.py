@@ -981,6 +981,15 @@ def _invocation(text, inputs, push_constants, memory, step=False, workgroup=None
         elif op == "OpBitReverse":
             bits = types.bits(a[0])
             values[res] = int(f"{val(a[1]) & wmask(a[0]):0{bits}b}"[::-1], 2)
+        elif op == "OpFConvert":
+            # binary64 <-> binary32. Narrowing rounds to nearest even (struct's '<f' in f32()); widening is exact.
+            x = val(a[1])
+            src = types.t.get(id_type.get(a[1]))
+            if not isinstance(x, float) or {src, types.t[a[0]]} != {("float", 32), ("float", 64)}:
+                raise UnsupportedConstruct("OpFConvert other than binary32 <-> binary64")
+            if math.isnan(x):
+                raise UnsupportedConstruct("OpFConvert of a NaN (payload and quieting not modelled)")
+            values[res] = f32(x) if types.t[a[0]] == ("float", 32) else float(x)
         elif op in ("OpConvertUToF", "OpConvertSToF"):
             x = val(a[1])
             # The width comes from the operand's type, as in sval(): a 64-bit value below 2**32 passes the value
@@ -1088,9 +1097,12 @@ def _invocation(text, inputs, push_constants, memory, step=False, workgroup=None
         elif op in ("OpFAdd", "OpFSub", "OpFMul", "OpFDiv"):
             x, y = val(a[1]), val(a[2])
             if types.t[a[0]] == ("float", 64):
-                if op != "OpFMul":
+                if op == "OpFDiv":
                     raise UnsupportedConstruct(f"{op} on binary64")
-                values[res] = x * y
+                if op != "OpFMul" and (math.isnan(x) or math.isnan(y)):
+                    raise UnsupportedConstruct(f"{op} on a binary64 NaN (payload not modelled)")
+                # Python's float is binary64 and rounds each operation to nearest even, as SPIR-V's default does.
+                values[res] = x * y if op == "OpFMul" else x + y if op == "OpFAdd" else x - y
                 continue
 
             def _fdiv(p, q):
